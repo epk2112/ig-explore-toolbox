@@ -221,37 +221,116 @@
     return tiles;
   }
 
+  // ---------- layout: flatten row-grids so hidden items reflow (no gaps) ----------
+  function cellOf(a) {
+    if (a.__igxCell && a.__igxCell.isConnected) return a.__igxCell;
+    let n = a.parentElement;
+    while (n && n !== document.body) {
+      const p = n.parentElement;
+      if (!p) break;
+      const pd = getComputedStyle(p).display;
+      if (pd === "grid" || (p.dataset && p.dataset.igxRow === "1")) { a.__igxCell = n; return n; }
+      n = p;
+    }
+    return null;
+  }
+
+  function rowColCount(row) {
+    const v = (getComputedStyle(row).getPropertyValue("--x-gridTemplateColumns") || "").trim();
+    if (v && v !== "none") {
+      const m = v.match(/repeat\(\s*(\d+)/);
+      if (m) return Number(m[1]);
+      const parts = v.split(/[\s,]+/).filter(Boolean);
+      if (parts.length && !/minmax|auto/.test(v)) return parts.length;
+    }
+    const g = getComputedStyle(row).gridTemplateColumns;
+    if (!g || g === "none") return 0;
+    return g.split(" ").filter(x => x && x !== "none").length;
+  }
+
+  function ensureLayout() {
+    const cols = new Map();
+    state.tiles.forEach(t => {
+      const cell = cellOf(t.el);
+      t.cell = cell;
+      if (!cell) return;
+      const row = cell.parentElement;
+      const col = row && row.parentElement;
+      if (!row || !col) return;
+      let e = cols.get(col);
+      if (!e) { e = { rows: new Set(), n: -1, mixed: false, allGrid: true }; cols.set(col, e); }
+      e.rows.add(row);
+      if (row.dataset.igxRow !== "1" && getComputedStyle(row).display !== "grid") e.allGrid = false;
+      const n = Number(col.dataset.igxCols || 0) || rowColCount(row);
+      if (e.n === -1) e.n = n; else if (n !== e.n) e.mixed = true;
+    });
+
+    cols.forEach((e, col) => {
+      if (e.mixed || !e.allGrid || e.n < 2) { col.dataset.igxFlat = "0"; return; }
+      // only flatten when every child of the column is one of our row grids
+      const kids = Array.from(col.children);
+      const allRows = kids.length > 0 && kids.every(k => k.dataset.igxRow === "1" || getComputedStyle(k).display === "grid");
+      if (!allRows) { col.dataset.igxFlat = "0"; return; }
+      const alreadyFlat = col.dataset.igxFlat === "1" && Number(col.dataset.igxCols) === e.n;
+      if (!alreadyFlat || getComputedStyle(col).display !== "grid") {
+        col.style.setProperty("display", "grid", "important");
+        col.style.setProperty("grid-template-columns", "repeat(" + e.n + ", 1fr)", "important");
+        col.dataset.igxCols = String(e.n);
+        col.dataset.igxFlat = "1";
+      }
+      e.rows.forEach(row => {
+        if (row.dataset.igxRow !== "1" || getComputedStyle(row).display !== "contents") {
+          row.style.setProperty("display", "contents", "important");
+          row.dataset.igxRow = "1";
+        }
+      });
+    });
+  }
+
   // ---------- render ----------
   function applySort() {
     const mode = state.settings.sort;
     const tiles = state.tiles;
 
-    // group by parent, remember original index once per node
+    // group by the container the items actually live in (flattened col or row)
     const groups = new Map();
     tiles.forEach((t, i) => {
-      if (t._ord == null) { t._ord = Number(t.el.dataset.igxOrd || i); }
-      const p = t.el.parentElement;
-      if (!p) return;
-      if (!groups.has(p)) groups.set(p, []);
-      groups.get(p).push(t);
+      const orig = Number(t.el.dataset.igxOrd || i);
+      let node = t.cell || t.el;
+      let container = node.parentElement;
+      if (container && container.dataset && container.dataset.igxRow === "1") container = container.parentElement;
+      if (!container) return;
+      if (!groups.has(container)) groups.set(container, []);
+      groups.get(container).push({ t, node, orig });
     });
 
-    groups.forEach((list, p) => {
-      const desired = (mode === "original")
-        ? list.slice().sort((a, b) => a._ord - b._ord)
-        : sortTiles(list);
-
-      const ordered = desired.map(t => t.el);
-      const current = list.map(t => t.el);
-      const same = ordered.every((node, i) => node === current[i]);
-      if (same) return; // already correct -> avoid MutationObserver feedback loops
-
-      const disp = getComputedStyle(p).display;
-      if (/flex|grid/.test(disp)) {
-        ordered.forEach((node, i) => { node.style.order = String(i); });
+    groups.forEach((list, container) => {
+      let desired;
+      if (mode === "original") {
+        desired = list.slice().sort((a, b) => a.orig - b.orig);
       } else {
-        ordered.forEach(node => { node.style.order = ""; });
-        ordered.forEach(node => p.appendChild(node));
+        const byTile = new Map(list.map(x => [x.t, x]));
+        desired = sortTiles(list.map(x => x.t)).map(t => byTile.get(t)).filter(Boolean);
+      }
+
+      const disp = getComputedStyle(container).display;
+      const canOrder = /flex|grid/.test(disp);
+
+      if (mode === "original") {
+        // clear stale order / restore DOM order only if we physically reordered before
+        const needsClear = list.some(x => x.node.style.order);
+        const domOrderSame = desired.every((x, i) => x.node === list[i].node);
+        if (needsClear) desired.forEach(x => { x.node.style.order = ""; });
+        if (!domOrderSame) desired.forEach(x => container.appendChild(x.node));
+        return;
+      }
+
+      if (canOrder) {
+        // order styles are attribute mutations -> only write when changed (observer is childList-only, but stay cheap)
+        desired.forEach((x, i) => { const v = String(i); if (x.node.style.order !== v) x.node.style.order = v; });
+      } else {
+        const domOrderSame = desired.every((x, i) => x.node === list[i].node);
+        if (!domOrderSame) desired.forEach(x => container.appendChild(x.node));
       }
     });
   }
@@ -310,6 +389,7 @@
 
   function render() {
     const s = state.settings;
+    ensureLayout();
     const topIds = new Set(sortTiles(state.tiles.filter(t => t.match)).slice(0, Number(s.topN) || 0).map(t => t.shortcode));
     state.tiles.forEach(t => {
       t.score = scoreOf(t);
@@ -318,6 +398,8 @@
 
       const hide = (s.filters.mode === "hide" && !t.match);
       t.el.classList.toggle("igx-hide", hide);
+      // hide the grid cell too so the track collapses and siblings reflow (no gaps)
+      if (t.cell) t.cell.classList.toggle("igx-hide-cell", hide);
       const dim = (s.overlay.dimNonMatching && !t.match) || (s.filters.mode === "highlight" && !t.match);
       t.el.classList.toggle("igx-dim", !!dim && !hide);
       t.el.classList.toggle("igx-match", s.filters.mode === "highlight" && t.match);

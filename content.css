@@ -1,5 +1,6 @@
 /* IG Explore Toolbox - overlay styles injected into instagram.com */
 a[data-igx="1"].igx-hide { display: none !important; }
+.igx-hide-cell { display: none !important; }
 a[data-igx="1"].igx-dim { opacity: 0.16 !important; filter: grayscale(1) blur(1.5px); transition: opacity .18s, filter .18s; }
 a[data-igx="1"].igx-match { outline: 3px solid #2ee6a8 !important; outline-offset: -3px; }
 a[data-igx="1"].igx-top { box-shadow: 0 0 0 3px #ff5c8a, 0 0 18px rgba(255,92,138,.55) !important; }
