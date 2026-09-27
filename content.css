@@ -1,0 +1,46 @@
+/* IG Explore Toolbox - overlay styles injected into instagram.com */
+a[data-igx="1"].igx-hide { display: none !important; }
+a[data-igx="1"].igx-dim { opacity: 0.16 !important; filter: grayscale(1) blur(1.5px); transition: opacity .18s, filter .18s; }
+a[data-igx="1"].igx-match { outline: 3px solid #2ee6a8 !important; outline-offset: -3px; }
+a[data-igx="1"].igx-top { box-shadow: 0 0 0 3px #ff5c8a, 0 0 18px rgba(255,92,138,.55) !important; }
+a[data-igx="1"].igx-selected { outline: 3px solid #ffd166 !important; outline-offset: -3px; }
+a[data-igx="1"].igx-border { outline: 2px solid rgba(255,255,255,.22); outline-offset: -2px; }
+a[data-igx="1"].igx-border[data-igx-type="reel"] { outline-color: #ff5c8a; }
+a[data-igx="1"].igx-border[data-igx-type="video"] { outline-color: #ff9f43; }
+a[data-igx="1"].igx-border[data-igx-type="carousel"] { outline-color: #8ecbff; }
+a[data-igx="1"].igx-border[data-igx-type="image"] { outline-color: #2ee6a8; }
+
+a[data-igx="1"] > .igx-badge {
+  position: absolute !important;
+  top: 6px !important;
+  left: 6px !important;
+  z-index: 5 !important;
+  pointer-events: none !important;
+  font: 600 10px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif !important;
+  letter-spacing: .03em;
+  color: #fff !important;
+  background: rgba(0,0,0,.72) !important;
+  border: 1px solid rgba(255,255,255,.28);
+  border-radius: 6px;
+  padding: 2px 6px !important;
+  text-transform: uppercase;
+  white-space: nowrap;
+  max-width: calc(100% - 12px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  backdrop-filter: blur(4px);
+}
+a[data-igx="1"] > .igx-badge[data-type="reel"] { background: rgba(214,40,84,.88) !important; }
+a[data-igx="1"] > .igx-badge[data-type="video"] { background: rgba(196,104,0,.88) !important; }
+a[data-igx="1"] > .igx-badge[data-type="carousel"] { background: rgba(29,104,178,.88) !important; }
+a[data-igx="1"] > .igx-badge[data-type="image"] { background: rgba(15,120,84,.88) !important; }
+
+.igx-tip {
+  font: 12px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #f5f5f5;
+  background: rgba(18,18,20,.96) !important;
+  border: 1px solid rgba(255,255,255,.16);
+  border-radius: 10px;
+  padding: 9px 11px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.5);
+}
