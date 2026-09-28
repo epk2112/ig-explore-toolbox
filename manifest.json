@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "IG Explore Toolbox",
-  "version": "1.0.0",
-  "description": "Filter, sort, badge, inspect and export the Instagram Explore grid: type filters, caption/OCR search, hashtag stats, reel duration decode, duplicate detection, CSV/JSON export.",
+  "version": "1.1.0",
+  "description": "Filter, sort, badge, inspect and export Instagram Explore and profile grids: type filters, caption/OCR search, profile stats, repost/foreign detection, hashtag stats, reel duration decode, duplicate detection, CSV/JSON export.",
   "minimum_chrome_version": "110",
   "permissions": ["storage"],
   "host_permissions": ["https://www.instagram.com/*"],

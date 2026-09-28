@@ -14,12 +14,14 @@
       excludeKw: "",
       hashtag: "",
       hideDupes: false,
+      hideForeign: false,
+      hideNoCaption: false,
       mode: "hide"
     },
     sort: "original",
     score: { reel: 3, image: 1, carousel: 2, video: 3, captionPer100: 1, perHashtag: 1, keywords: "" },
     topN: 6,
-    overlay: { badges: true, borders: true, tooltip: true, aria: true, dimNonMatching: false },
+    overlay: { badges: true, borders: true, tooltip: true, tipChars: 260, aria: true, dimNonMatching: false },
     inspect: false
   };
 
@@ -30,6 +32,7 @@
     settings: null,
     tiles: [],
     stats: null,
+    profile: null,
     selected: null,
     listeners: []
   };
@@ -111,6 +114,16 @@
   }
 
   // ---------- extraction ----------
+  const RESERVED_SEGMENTS = new Set(["p", "reel", "tv", "explore", "reels", "stories", "accounts", "direct", "about", "developer", "legal"]);
+  const OWNER_CACHE = new WeakMap();
+
+  function ownerOf(href) {
+    const m = (href || "").match(/^\/([^/?#]+)\//);
+    if (!m) return null;
+    const seg = decodeURIComponent(m[1]);
+    return RESERVED_SEGMENTS.has(seg) ? null : seg;
+  }
+
   function extract(a) {
     const href = a.getAttribute("href") || "";
     const m = href.match(/\/(?:p|reel|tv)\/([^/?#]+)/);
@@ -120,11 +133,14 @@
     const svg = a.querySelector("svg[aria-label]");
     const badge = svg ? svg.getAttribute("aria-label") : null;
 
+    // profile pages badge reels as "Clip" and have no <video> element -> use badge then href
     let type = "image";
-    if (badge === "Reel" || (!badge && video && /\/reel\//.test(href))) type = "reel";
-    else if (badge === "Carousel") type = "carousel";
+    if (badge === "Carousel") type = "carousel";
+    else if (badge === "Reel" || badge === "Clip") type = "reel";
     else if (video && !img) type = video.hasAttribute("loop") ? "reel" : "video";
     else if (video && img) type = "video";
+    else if (/\/reel\//.test(href)) type = "reel";
+    else if (/\/tv\//.test(href)) type = "video";
 
     const caption = img ? (img.getAttribute("alt") || "") : "";
     const hashtags = (caption.match(/#[\p{L}\p{N}_]+/gu) || []).map(s => s.slice(1).toLowerCase());
@@ -150,12 +166,24 @@
     }
 
     const id = shortcodeToId(shortcode);
+    const owner = ownerOf(href);
+
+    // pinned marker on profile grids (text or aria), absent on explore
+    let pinned = false;
+    try {
+      const cell = a.parentElement;
+      const probe = cell || a;
+      pinned = !!probe.querySelector('svg[aria-label*="inned" i], [aria-label*="inned" i]')
+        || /\bpinned\b/i.test(probe.textContent || "");
+    } catch (e) { /* ignore */ }
 
     return {
       el: a,
       href, shortcode, id,
       type, badge,
+      owner, pinned,
       caption, captionLen: caption.length,
+      noCaption: !caption.trim(),
       hashtags, mentions,
       lang: detectLang(caption),
       media, aspect,
@@ -164,18 +192,82 @@
     };
   }
 
+  // ---------- profile / route context ----------
+  function currentRoute() {
+    const segs = location.pathname.split("/").filter(Boolean);
+    const profile = segs.length && !RESERVED_SEGMENTS.has(segs[0]) ? segs[0] : null;
+    let section = "posts";
+    if (profile) {
+      if (segs[1] === "reels") section = "reels";
+      else if (segs[1] === "tagged") section = "tagged";
+    } else if (segs[0] === "explore" || !segs.length) section = "explore";
+    else if (segs[0] === "reels") section = "reels-feed";
+    return { profile, section, path: location.pathname };
+  }
+
+  function parseProfileHeader() {
+    const route = currentRoute();
+    if (!route.profile) return null;
+    const header = document.querySelector("header");
+    if (!header) return null;
+    const lines = (header.innerText || "").split("\n").map(s => s.trim()).filter(Boolean);
+    const num = (s) => {
+      const m = String(s).replace(/,/g, "").match(/([\d.]+)\s*([KMB])?/i);
+      if (!m) return null;
+      let v = parseFloat(m[1]);
+      const suf = (m[2] || "").toUpperCase();
+      if (suf === "K") v *= 1e3; else if (suf === "M") v *= 1e6; else if (suf === "B") v *= 1e9;
+      return Math.round(v);
+    };
+    const find = (re) => { const l = lines.find(x => re.test(x)); return l ? num(l) : null; };
+    const link = header.querySelector('a[href^="http"]');
+    let externalUrl = null;
+    if (link) {
+      const raw = link.getAttribute("href") || "";
+      const u = raw.match(/[?&]u=([^&]+)/);
+      externalUrl = u ? decodeURIComponent(u[1]) : raw;
+    }
+    return {
+      username: route.profile,
+      displayName: lines[1] && !/posts$/i.test(lines[1]) ? lines[1] : null,
+      posts: find(/^\s*[\d.,]+[KMB]?\s+posts$/i),
+      followers: find(/^\s*[\d.,]+[KMB]?\s+followers$/i),
+      following: find(/^\s*[\d.,]+[KMB]?\s+following$/i),
+      verified: !!header.querySelector('svg[aria-label="Verified"]'),
+      externalUrl
+    };
+  }
+
+  function markForeign(tiles) {
+    const route = currentRoute();
+    const me = route.profile;
+    tiles.forEach(t => {
+      t.foreign = !!(me && t.owner && t.owner !== me);
+    });
+  }
+
   function scan() {
     const anchors = Array.from(document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"], a[href*="/tv/"]'))
       .filter(a => a.querySelector("img, video"));
     const tiles = anchors.map(extract);
+    markForeign(tiles);
 
-    // duplicates
+    // duplicates by shortcode
     const seen = new Map();
     tiles.forEach(t => {
       const n = seen.get(t.shortcode) || 0;
       t.dupIndex = n; seen.set(t.shortcode, n + 1);
     });
     tiles.forEach(t => { t.dupCount = seen.get(t.shortcode) - 1; });
+
+    // cross-username caption duplicates (repost detector)
+    const capSeen = new Map();
+    tiles.forEach(t => {
+      const key = t.captionLen >= 24 ? t.caption.replace(/\s+/g, " ").trim().toLowerCase() : "";
+      t.capDupIndex = 0; t.capDupCount = 0; t._capKey = key;
+      if (key) { const n = capSeen.get(key) || 0; t.capDupIndex = n; capSeen.set(key, n + 1); }
+    });
+    tiles.forEach(t => { if (t._capKey) t.capDupCount = capSeen.get(t._capKey) - 1; });
 
     state.tiles = tiles;
     return tiles;
@@ -208,34 +300,52 @@
       if (!t.hashtags.includes(want)) return false;
     }
     if (f.hideDupes && t.dupIndex > 0) return false;
+    if (f.hideForeign && t.foreign) return false;
+    if (f.hideNoCaption && t.noCaption) return false;
     return true;
   }
 
   function sortTiles(tiles) {
     const mode = state.settings.sort;
     if (mode === "original") return tiles.slice().sort((a, b) => a.order - b.order);
-    if (mode === "newest") return tiles.slice().sort((a, b) => (b.id || 0n) - (a.id || 0n));
-    if (mode === "oldest") return tiles.slice().sort((a, b) => (a.id || 0n) - (b.id || 0n));
-    if (mode === "score") return tiles.slice().sort((a, b) => b.score - a.score);
-    if (mode === "caption") return tiles.slice().sort((a, b) => b.captionLen - a.captionLen);
+    // pinned posts stay first on profile grids regardless of sort mode
+    const pinnedFirst = (a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
+    if (mode === "newest") return tiles.slice().sort((a, b) => pinnedFirst(a, b) || (b.id || 0n) - (a.id || 0n));
+    if (mode === "oldest") return tiles.slice().sort((a, b) => pinnedFirst(a, b) || (a.id || 0n) - (b.id || 0n));
+    if (mode === "score") return tiles.slice().sort((a, b) => pinnedFirst(a, b) || b.score - a.score);
+    if (mode === "caption") return tiles.slice().sort((a, b) => pinnedFirst(a, b) || b.captionLen - a.captionLen);
     return tiles;
   }
 
-  // ---------- layout: flatten row-grids so hidden items reflow (no gaps) ----------
+  // ---------- layout: flatten row containers so hidden items reflow (no gaps) ----------
+  // Explore rows are CSS grids; profile rows are flex rows of equal cells. Both get
+  // flattened into one grid on the column wrapper so hiding a cell reflows everything.
   function cellOf(a) {
     if (a.__igxCell && a.__igxCell.isConnected) return a.__igxCell;
     let n = a.parentElement;
     while (n && n !== document.body) {
       const p = n.parentElement;
       if (!p) break;
-      const pd = getComputedStyle(p).display;
-      if (pd === "grid" || (p.dataset && p.dataset.igxRow === "1")) { a.__igxCell = n; return n; }
+      const cs = getComputedStyle(p);
+      const pd = cs.display;
+      const rowLike = pd === "grid" ||
+        (pd === "flex" && /^row/.test(cs.flexDirection) && p.children.length > 1);
+      if (rowLike || (p.dataset && p.dataset.igxRow === "1")) { a.__igxCell = n; return n; }
       n = p;
     }
     return null;
   }
 
-  function rowColCount(row) {
+  function rowKind(row) {
+    if (row.dataset && row.dataset.igxRow === "1") return row.dataset.igxKind === "flex" ? "flex" : "grid";
+    const cs = getComputedStyle(row);
+    if (cs.display === "grid") return "grid";
+    if (cs.display === "flex" && /^row/.test(cs.flexDirection)) return "flex";
+    return null;
+  }
+
+  function rowColCount(row, kind) {
+    if (kind === "flex") return row.children.length;
     const v = (getComputedStyle(row).getPropertyValue("--x-gridTemplateColumns") || "").trim();
     if (v && v !== "none") {
       const m = v.match(/repeat\(\s*(\d+)/);
@@ -258,18 +368,20 @@
       const col = row && row.parentElement;
       if (!row || !col) return;
       let e = cols.get(col);
-      if (!e) { e = { rows: new Set(), n: -1, mixed: false, allGrid: true }; cols.set(col, e); }
-      e.rows.add(row);
-      if (row.dataset.igxRow !== "1" && getComputedStyle(row).display !== "grid") e.allGrid = false;
-      const n = Number(col.dataset.igxCols || 0) || rowColCount(row);
+      if (!e) { e = { rows: new Map(), n: -1, mixed: false, allRows: true }; cols.set(col, e); }
+      e.rows.set(row, rowKind(row));
+      const kind = rowKind(row);
+      if (!kind) e.allRows = false;
+      const n = Number(col.dataset.igxCols || 0) || rowColCount(row, kind);
+      if (n < 2) e.allRows = false;
       if (e.n === -1) e.n = n; else if (n !== e.n) e.mixed = true;
     });
 
     cols.forEach((e, col) => {
-      if (e.mixed || !e.allGrid || e.n < 2) { col.dataset.igxFlat = "0"; return; }
-      // only flatten when every child of the column is one of our row grids
+      if (e.mixed || !e.allRows || e.n < 2) { col.dataset.igxFlat = "0"; return; }
+      // only flatten when every child of the column is one of our rows
       const kids = Array.from(col.children);
-      const allRows = kids.length > 0 && kids.every(k => k.dataset.igxRow === "1" || getComputedStyle(k).display === "grid");
+      const allRows = kids.length > 0 && kids.every(k => k.dataset.igxRow === "1" || rowKind(k));
       if (!allRows) { col.dataset.igxFlat = "0"; return; }
       const alreadyFlat = col.dataset.igxFlat === "1" && Number(col.dataset.igxCols) === e.n;
       if (!alreadyFlat || getComputedStyle(col).display !== "grid") {
@@ -278,10 +390,11 @@
         col.dataset.igxCols = String(e.n);
         col.dataset.igxFlat = "1";
       }
-      e.rows.forEach(row => {
+      e.rows.forEach((kind, row) => {
         if (row.dataset.igxRow !== "1" || getComputedStyle(row).display !== "contents") {
           row.style.setProperty("display", "contents", "important");
           row.dataset.igxRow = "1";
+          row.dataset.igxKind = kind === "flex" ? "flex" : "grid";
         }
       });
     });
@@ -348,7 +461,11 @@
       const bits = [t.type.toUpperCase()];
       if (t.type === "reel" || t.type === "video") { const d = fmtDur(t.media.duration); if (d) bits.push(d); if (t.media.res) bits.push(t.media.res + "p"); }
       if (t.type === "image" && t.media.w) bits.push(t.media.w + "w");
+      if (t.pinned) bits.push("pin");
+      if (t.foreign) bits.push("other");
+      if (t.noCaption) bits.push("nocap");
       if (t.dupIndex > 0) bits.push("dup" + (t.dupIndex + 1));
+      if (t.capDupCount > 0) bits.push("capdup");
       if (t.auto) bits.push("auto");
       badgeEl.textContent = bits.join(" · ");
       badgeEl.dataset.type = t.type;
@@ -357,6 +474,9 @@
     // border
     a.classList.toggle("igx-border", !!state.settings.overlay.borders);
     a.dataset.igxType = t.type;
+    if (t.foreign) a.dataset.igxForeign = "1"; else delete a.dataset.igxForeign;
+    if (t.pinned) a.dataset.igxPinned = "1"; else delete a.dataset.igxPinned;
+    if (t.noCaption) a.dataset.igxNocap = "1"; else delete a.dataset.igxNocap;
   }
 
   function buildStats() {
@@ -365,21 +485,31 @@
     const byLang = { sw: 0, en: 0, none: 0, other: 0 };
     const tags = new Map(), mentions = new Map();
     let shown = 0, dupes = 0, auto = 0, durSum = 0, durN = 0, capSum = 0;
+    let foreign = 0, noCap = 0, pinned = 0, capDupes = 0;
     tiles.forEach(t => {
       byType[t.type] = (byType[t.type] || 0) + 1;
       byLang[t.lang] = (byLang[t.lang] || 0) + 1;
       if (t.match) shown++;
       if (t.dupIndex > 0) dupes++;
       if (t.auto) auto++;
+      if (t.foreign) foreign++;
+      if (t.noCaption) noCap++;
+      if (t.pinned) pinned++;
+      if (t.capDupIndex > 0) capDupes++;
       capSum += t.captionLen;
       if (t.media.duration != null) { durSum += t.media.duration; durN++; }
       t.hashtags.forEach(h => tags.set(h, (tags.get(h) || 0) + 1));
       t.mentions.forEach(m => mentions.set(m, (mentions.get(m) || 0) + 1));
     });
     const top = (map, n) => [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, n);
+    const route = currentRoute();
+    const prof = state.profile;
     return {
       total: tiles.length, shown, hidden: tiles.length - shown,
       byType, byLang, dupes, auto,
+      foreign, noCaption: noCap, pinned, captionDupes: capDupes,
+      route, profile: prof,
+      loadedVsTotal: prof && prof.posts ? tiles.length + "/" + prof.posts : null,
       avgCaption: tiles.length ? Math.round(capSum / tiles.length) : 0,
       avgDuration: durN ? Math.round(durSum / durN) : null,
       topHashtags: top(tags, 10),
@@ -408,7 +538,8 @@
 
       if (s.overlay.aria) {
         const cap = t.caption.replace(/\s+/g, " ").slice(0, 140);
-        t.el.setAttribute("aria-label", `${t.type} post ${t.shortcode}${cap ? ". " + cap : ""}. Score ${t.score}`);
+        const extra = (t.pinned ? ". Pinned post" : "") + (t.foreign ? ". From @" + t.owner : "") + (t.noCaption ? ". No caption" : "");
+        t.el.setAttribute("aria-label", `${t.type} post ${t.shortcode}${cap ? ". " + cap : ""}${extra}. Score ${t.score}`);
       } else t.el.removeAttribute("aria-label");
     });
     applySort();
@@ -436,12 +567,21 @@
       const tipEl = ensureTip();
       const rows = [];
       rows.push(`<b style="color:#ff5c8a">${t.type.toUpperCase()}</b> · ${t.shortcode} · <span style="color:#8ecbff">${t.lang}</span>`);
+      if (t.pinned) rows.push(`<span style="color:#ffd166">📌 pinned post</span>`);
+      if (t.foreign) rows.push(`<span style="color:#ff9f43">from @${t.owner} (not this profile)</span>`);
       if (t.media.duration != null) rows.push(`duration ${fmtDur(t.media.duration)}${t.media.res ? " · " + t.media.res + "p" : ""}`);
       else if (t.media.w) rows.push(`source ${t.media.w}×${t.media.h || "?"}${t.aspect ? " · display ratio " + t.aspect : ""}`);
       if (t.dupIndex > 0 || t.dupCount > 0) rows.push(`duplicate #${t.dupIndex + 1}${t.dupCount ? " (+" + t.dupCount + " more)" : ""}`);
+      if (t.capDupCount > 0) rows.push(`same caption as ${t.capDupCount} other tile${t.capDupCount > 1 ? "s" : ""}`);
       if (t.hashtags.length) rows.push(`#${t.hashtags.slice(0, 8).join(" #")}`);
       if (t.mentions.length) rows.push(`@${t.mentions.slice(0, 6).join(" @")}`);
-      if (t.caption) rows.push(`<span style="opacity:.85">${t.caption.replace(/\s+/g, " ").slice(0, 260)}${t.caption.length > 260 ? "…" : ""}</span>`);
+      if (t.noCaption) rows.push(`<span style="opacity:.6">no caption on thumbnail</span>`);
+      if (t.caption) {
+        const cap = t.caption.replace(/\s+/g, " ");
+        const lim = Number(state.settings.overlay.tipChars);
+        const shown = (lim > 0 && cap.length > lim) ? cap.slice(0, lim) + "…" : cap;
+        rows.push(`<span style="opacity:.85">${shown}</span>`);
+      }
       tipEl.innerHTML = rows.join("<br>");
       tipEl.style.display = "block";
       const r = a.getBoundingClientRect();
@@ -484,9 +624,11 @@
         shortcode: t.shortcode,
         url: "https://www.instagram.com" + t.href,
         type: t.type, badge: t.badge, lang: t.lang,
-        caption: t.caption, captionLen: t.captionLen,
+        owner: t.owner, foreign: t.foreign, pinned: t.pinned,
+        caption: t.caption, captionLen: t.captionLen, noCaption: t.noCaption,
         hashtags: t.hashtags, mentions: t.mentions,
         autoCaption: t.auto,
+        captionDupIndex: t.capDupIndex, captionDupCount: t.capDupCount,
         duration: t.media.duration, resolution: t.media.res,
         mediaWidth: t.media.w, mediaHeight: t.media.h,
         aspect: t.aspect, mediaUrl: t.media.src ? t.media.src.split("?")[0] : null,
@@ -497,7 +639,15 @@
     getSelected() { return state.selected ? state.tiles.find(t => t.shortcode === state.selected) || null : null; },
     select(sc) { state.selected = sc; render(); },
     getStats() { return state.stats || buildStats(); },
-    rescan() { scan(); state.tiles.forEach((t, i) => { t.order = i; }); render(); return state.stats; },
+    getProfile() { return state.profile; },
+    getRoute() { return currentRoute(); },
+    rescan() {
+      state.profile = parseProfileHeader();
+      scan();
+      state.tiles.forEach((t, i) => { t.order = i; });
+      render();
+      return state.stats;
+    },
     applySettings(next, save = true) {
       state.settings = Object.assign(clone(DEFAULTS), next);
       ["filters", "score", "overlay"].forEach(k => {
@@ -524,12 +674,34 @@
   });
 
   // ---------- boot ----------
+  function bindRoute() {
+    const check = () => {
+      const path = location.pathname;
+      if (path === state.lastPath) return;
+      state.lastPath = path;
+      state.selected = null;
+      IGX.rescan();
+    };
+    state.lastPath = location.pathname;
+    const wrap = (fn) => function (...args) {
+      const r = fn.apply(this, args);
+      setTimeout(check, 400); // IG re-renders after navigation
+      return r;
+    };
+    try {
+      history.pushState = wrap(history.pushState);
+      history.replaceState = wrap(history.replaceState);
+    } catch (e) { /* ignore */ }
+    window.addEventListener("popstate", () => setTimeout(check, 400));
+  }
+
   function boot() {
     chrome.storage.local.get(["igxSettings"], (res) => {
       state.settings = IGX.applySettings(res.igxSettings || clone(DEFAULTS), false);
       IGX.rescan();
       bindTooltip();
       bindInspect();
+      bindRoute();
       // lazy rescan on IG's infinite scroll / re-render
       let timer = null;
       const mo = new MutationObserver(() => {

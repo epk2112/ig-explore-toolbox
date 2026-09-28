@@ -92,6 +92,8 @@
       <div class="sect">Rules</div>
       <div class="row"><label>Min caption length</label><input type="number" id="f-min" min="0" step="10"></div>
       <label class="chk"><input type="checkbox" id="f-dup"> Hide duplicate shortcodes</label>
+      <label class="chk"><input type="checkbox" id="f-foreign"> Hide posts from other accounts (reposts/collabs)</label>
+      <label class="chk"><input type="checkbox" id="f-nocap"> Hide posts with no caption</label>
       <div class="row"><label>Non-matching</label>
         <select id="f-mode"><option value="hide">Hide</option><option value="highlight">Highlight only</option></select></div>
       <div class="row"><button class="btn" id="f-reset">Reset filters</button></div>
@@ -126,6 +128,7 @@
       <label class="chk"><input type="checkbox" id="o-badge"> Corner badges (type · duration · resolution)</label>
       <label class="chk"><input type="checkbox" id="o-border"> Color-coded borders by type</label>
       <label class="chk"><input type="checkbox" id="o-tip"> Hover tooltip (full caption + metadata)</label>
+      <div class="row"><label>Tooltip caption limit (chars, 0 = unlimited)</label><input type="number" id="o-tipchars" min="0" max="100000" step="10"></div>
       <label class="chk"><input type="checkbox" id="o-dim"> Dim non-matching tiles</label>
       <label class="chk"><input type="checkbox" id="o-aria"> Inject accessible aria-labels</label>
       <div class="note">Badge colors: pink = Reel, orange = Video, blue = Carousel, green = Image.</div>
@@ -134,6 +137,8 @@
     </div>
 
     <div class="pane" data-p="inspect">
+      <div class="sect" id="prof-sect">Profile</div>
+      <div id="profile"></div>
       <div class="stats" id="stats"></div>
       <div class="sect">Caption language split</div>
       <div id="langbars"></div>
@@ -155,7 +160,7 @@
         <button class="btn" id="x-urls">Copy media URLs</button></div>
       <div class="sect">Inspect mode</div>
       <label class="chk"><input type="checkbox" id="x-inspect"> Click a tile in the grid to pin its full attribute dump</label>
-      <div class="note">CSV columns: shortcode, type, badge, lang, caption, hashtags, mentions, duration, resolution, dimensions, aspect, dup index, score, URL.</div>
+      <div class="note">CSV columns: shortcode, type, badge, lang, owner, foreign, pinned, caption, no_caption, hashtags, mentions, duration, resolution, dimensions, aspect, dup index, caption dup, score, URL. Filenames include profile + section (e.g. ig-username-reels-…).</div>
     </div>
   </div>
   <div class="foot">
@@ -208,6 +213,8 @@
     $("f-inc").value = s.filters.includeKw; $("f-exc").value = s.filters.excludeKw;
     $("f-tag").value = s.filters.hashtag; $("f-min").value = s.filters.minCaption;
     $("f-dup").checked = s.filters.hideDupes; $("f-mode").value = s.filters.mode;
+    $("f-foreign").checked = !!s.filters.hideForeign;
+    $("f-nocap").checked = !!s.filters.hideNoCaption;
     $("s-mode").value = s.sort;
     $("w-reel").value = s.score.reel; $("w-video").value = s.score.video;
     $("w-image").value = s.score.image; $("w-carousel").value = s.score.carousel;
@@ -215,6 +222,7 @@
     $("w-kw").value = s.score.keywords; $("s-topn").value = s.topN;
     $("o-badge").checked = s.overlay.badges; $("o-border").checked = s.overlay.borders;
     $("o-tip").checked = s.overlay.tooltip; $("o-dim").checked = s.overlay.dimNonMatching;
+    $("o-tipchars").value = s.overlay.tipChars != null ? s.overlay.tipChars : 260;
     $("o-aria").checked = s.overlay.aria;
     $("x-inspect").checked = !!s.inspect;
   }
@@ -226,10 +234,34 @@
     const st = window.IGX.getStats();
     if (!st) return;
 
+    // profile card (profile pages only)
+    const prof = st.profile;
+    const route = st.route || { section: "explore" };
+    if (prof) {
+      $("prof-sect").style.display = "";
+      $("profile").style.display = "";
+      $("profile").innerHTML = `<div class="kv">
+        <div>account</div><div>@${esc(prof.username)}${prof.verified ? " ✓" : ""}${prof.displayName ? " · " + esc(prof.displayName) : ""}</div>
+        <div>posts</div><div>${prof.posts != null ? prof.posts.toLocaleString() : "—"}${st.loadedVsTotal ? " (" + st.loadedVsTotal + " loaded)" : ""}</div>
+        <div>followers</div><div>${prof.followers != null ? prof.followers.toLocaleString() : "—"}</div>
+        <div>following</div><div>${prof.following != null ? prof.following.toLocaleString() : "—"}</div>
+        <div>section</div><div>${esc(route.section)}</div>
+        ${prof.externalUrl ? `<div>link</div><div>${esc(prof.externalUrl)}</div>` : ""}
+      </div>`;
+    } else if (route.section === "explore") {
+      $("prof-sect").style.display = ""; $("profile").style.display = "";
+      $("profile").innerHTML = `<div class="note">Explore page — no profile header. Section: explore.</div>`;
+    } else {
+      $("prof-sect").style.display = "none"; $("profile").style.display = "none";
+      $("profile").innerHTML = "";
+    }
+
     $("stats").innerHTML = [
       ["Tiles", st.total], ["Shown", st.shown], ["Hidden", st.hidden],
       ["Reels", (st.byType.reel || 0) + (st.byType.video || 0)], ["Images", st.byType.image || 0],
       ["Carousels", st.byType.carousel || 0], ["Dupes", st.dupes], ["Auto/OCR", st.auto],
+      ["Foreign", st.foreign || 0], ["No cap", st.noCaption || 0],
+      ["Pinned", st.pinned || 0], ["Cap dupes", st.captionDupes || 0],
       ["Avg cap", st.avgCaption]
     ].map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join("");
 
@@ -253,8 +285,8 @@
     const tiles = window.IGX.getTiles();
     $("tiles").innerHTML = tiles.map(t =>
       `<div class="li" data-sc="${esc(t.shortcode)}"><span class="t">${t.type.slice(0, 4)}</span>
-       <span class="c">${esc(t.caption.replace(/\s+/g, " ").slice(0, 70)) || "—"}</span>
-       <span style="color:#7d7d90">${t.matches ? "✓" : "✕"}</span></div>`).join("");
+       <span class="c">${t.pinned ? "📌 " : ""}${t.foreign ? "↪@" + esc(t.owner) + " " : ""}${esc(t.caption.replace(/\s+/g, " ").slice(0, 70)) || "—"}</span>
+       <span style="color:${t.matches ? "#2ee6a8" : "#ff5c8a"}">${t.matches ? "✓" : "✕"}</span></div>`).join("");
     root.querySelectorAll(".li").forEach(n => n.onclick = () => { window.IGX.select(n.dataset.sc); paint(); });
 
     const sel = window.IGX.getSelected();
@@ -263,8 +295,11 @@
       $("sel").innerHTML = `<div class="kv">
         <div>shortcode</div><div>${esc(sel.shortcode)}</div>
         <div>type / badge</div><div>${esc(sel.type)} / ${esc(sel.badge || "—")}</div>
+        <div>owner</div><div>${sel.owner ? "@" + esc(sel.owner) + (sel.foreign ? " (foreign)" : " (this profile)") : "—"}</div>
+        <div>pinned</div><div>${sel.pinned ? "yes" : "no"}</div>
         <div>language</div><div>${esc(sel.lang)}</div>
-        <div>caption length</div><div>${sel.captionLen}${sel.autoCaption ? " (auto/OCR)" : ""}</div>
+        <div>caption length</div><div>${sel.captionLen}${sel.autoCaption ? " (auto/OCR)" : ""}${sel.noCaption ? " (no caption)" : ""}</div>
+        <div>caption dup</div><div>${sel.captionDupCount > 0 ? "yes, " + sel.captionDupCount + " other tile(s)" : "no"}</div>
         <div>duration</div><div>${sel.duration != null ? Math.round(sel.duration) + "s" : "—"}</div>
         <div>resolution</div><div>${sel.resolution ? sel.resolution + "p" : "—"}</div>
         <div>media size</div><div>${sel.mediaWidth || "?"} × ${sel.mediaHeight || "?"}</div>
@@ -289,6 +324,12 @@
     setTimeout(() => URL.revokeObjectURL(u), 4000);
   }
   const q = (s) => '"' + String(s == null ? "" : s).replace(/"/g, '""') + '"';
+  function exportName(ext) {
+    const route = window.IGX.getRoute ? window.IGX.getRoute() : { section: "explore" };
+    const who = route.profile || "explore";
+    const sec = route.section && route.section !== "posts" ? "-" + route.section : "";
+    return "ig-" + who + sec + "-" + Date.now() + ext;
+  }
 
   function wire() {
     root.querySelectorAll(".tab").forEach(t => t.onclick = () => {
@@ -308,6 +349,8 @@
     on("f-tag", "input", e => set("filters.hashtag", e.target.value.replace(/^#/, "")));
     on("f-min", "input", e => set("filters.minCaption", Number(e.target.value) || 0));
     on("f-dup", "change", e => set("filters.hideDupes", e.target.checked));
+    on("f-foreign", "change", e => set("filters.hideForeign", e.target.checked));
+    on("f-nocap", "change", e => set("filters.hideNoCaption", e.target.checked));
     on("f-mode", "change", e => set("filters.mode", e.target.value));
     $("f-reset").onclick = () => {
       const s = JSON.parse(JSON.stringify(window.IGX.settings));
@@ -325,22 +368,28 @@
     [["o-badge", "badges"], ["o-border", "borders"], ["o-tip", "tooltip"],
      ["o-dim", "dimNonMatching"], ["o-aria", "aria"]].forEach(([id, key]) =>
       on(id, "change", e => set("overlay." + key, e.target.checked)));
+    on("o-tipchars", "input", e => set("overlay.tipChars", Math.max(0, Number(e.target.value) || 0)));
     on("x-inspect", "change", e => set("inspect", e.target.checked));
 
     on("x-csv", "click", () => {
       const rows = window.IGX.getTiles();
-      const head = ["shortcode", "type", "badge", "lang", "caption", "hashtags", "mentions",
-        "duration_s", "resolution", "width", "height", "aspect", "dup_index", "score", "matches", "url"];
+      const head = ["shortcode", "type", "badge", "lang", "owner", "foreign", "pinned", "caption", "no_caption", "hashtags", "mentions",
+        "duration_s", "resolution", "width", "height", "aspect", "dup_index", "caption_dup_index", "score", "matches", "url"];
       const csv = [head.join(",")].concat(rows.map(t => [
-        t.shortcode, t.type, t.badge || "", t.lang, t.caption, (t.hashtags || []).join(" "),
+        t.shortcode, t.type, t.badge || "", t.lang, t.owner || "", t.foreign ? 1 : 0, t.pinned ? 1 : 0,
+        t.caption, t.noCaption ? 1 : 0, (t.hashtags || []).join(" "),
         (t.mentions || []).join(" "), t.duration != null ? Math.round(t.duration) : "",
         t.resolution || "", t.mediaWidth || "", t.mediaHeight || "", t.aspect || "",
-        t.dupIndex, t.score, t.matches, t.url
+        t.dupIndex, t.captionDupIndex || 0, t.score, t.matches, t.url
       ].map(q).join(","))).join("\r\n");
-      download("ig-explore-" + Date.now() + ".csv", csv, "text/csv");
+      download(exportName(".csv"), csv, "text/csv");
     });
-    on("x-json", "click", () => download("ig-explore-" + Date.now() + ".json",
-      JSON.stringify({ exportedAt: new Date().toISOString(), stats: window.IGX.getStats(), tiles: window.IGX.getTiles() }, null, 2),
+    on("x-json", "click", () => download(exportName(".json"),
+      JSON.stringify({
+        exportedAt: new Date().toISOString(),
+        profile: window.IGX.getProfile(), route: window.IGX.getRoute(),
+        stats: window.IGX.getStats(), tiles: window.IGX.getTiles()
+      }, null, 2),
       "application/json"));
     on("x-cap", "click", () => {
       const txt = window.IGX.getTiles().map(t => `[${t.shortcode}] ${t.caption}`).join("\n\n");

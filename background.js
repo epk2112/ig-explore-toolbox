@@ -26,6 +26,8 @@ const DEFAULT_SETTINGS = {
     excludeKw: "",
     hashtag: "",
     hideDupes: false,
+    hideForeign: false,
+    hideNoCaption: false,
     mode: "hide" // hide | highlight
   },
   sort: "original", // original | newest | oldest | score | caption
@@ -43,6 +45,7 @@ const DEFAULT_SETTINGS = {
     badges: true,
     borders: true,
     tooltip: true,
+    tipChars: 260,
     aria: true,
     dimNonMatching: false
   }
